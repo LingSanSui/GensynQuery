@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gensyn 查询工具</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/element-plus/dist/index.css">
+    <link rel="shortcut icon" href="favicon.ico" type="image/x-icon">
+    <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/element-plus"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.umd.min.js"></script>
+    <style>
+        /* 响应式样式 */
+        @media screen and (max-width: 768px) {
+            .button-group {
+                margin-top: 15px;
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
+            }
+            .button-group .el-button {
+                flex: 1;
+                min-width: calc(50% - 5px);
+                margin: 0 !important;
+            }
+            .query-time-tag {
+                width: 100%;
+                margin: 10px 0 0 0 !important;
+                text-align: center;
+            }
+            .el-table {
+                width: 100%;
+                overflow-x: auto;
+            }
+            /* 移动端表头固定 */
+            .el-table__header-wrapper {
+                position: sticky;
+                top: 0;
+                z-index: 10;
+                background-color: #fff;
+            }
+            .mobile-scroll-tip {
+                display: block;
+                color: #909399;
+                font-size: 12px;
+                margin: 10px 0;
+                text-align: center;
+            }
+        }
+        @media screen and (min-width: 769px) {
+            .mobile-scroll-tip {
+                display: none;
+            }
+            .button-group {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                min-height: 40px;
+                flex-wrap: wrap;
+            }
+            .button-group .el-button {
+                flex-shrink: 0;
+            }
+            .button-group .query-time-tag {
+                flex-shrink: 0;
+                white-space: nowrap;
+            }
+            .button-container {
+                min-height: 100px;
+                display: flex;
+                align-items: flex-start;
+            }
+        }
+        /* 通用样式 */
+        .el-main {
+            padding: 10px;
+        }
+        .el-card {
+            margin: 0 auto;
+            max-width: 1400px;
+        }
+        .table-container {
+            margin-top: 20px;
+            overflow-x: auto;
+        }
+        .el-card__body {
+            padding: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <el-container>
+            <el-main>
+                <el-card>
+                    <el-row :gutter="20">
+                        <el-col :xs="24" :sm="24" :md="16" :lg="16" :xl="16">
+                            <el-input
+                                v-model="inputPeerIds"
+                                type="textarea"
+                                :rows="4"
+                                placeholder="请输入PeerID列表，每行一个">
+                            </el-input>
+                        </el-col>
+                        <el-col :xs="24" :sm="24" :md="8" :lg="8" :xl="8" class="button-container">
+                            <div class="button-group">
+                                <el-button type="primary" @click="importPeerIds">导入</el-button>
+                                <el-button type="success" @click="queryData" :loading="querying">查询</el-button>
+                                <el-button type="info" @click="exportData">导出</el-button>
+                                <el-button type="danger" @click="clearData">清空</el-button>
+                                <el-tag v-if="lastQueryTime" class="query-time-tag">上次查询: {{ lastQueryTime }}</el-tag>
+                            </div>
+                        </el-col>
+                    </el-row>
+
+                    <div class="mobile-scroll-tip">
+                        ← 左右滑动查看更多 →
+                    </div>
+
+                    <div class="table-container">
+                        <el-table :data="peerList" style="width: 100%">
+                            <el-table-column type="index" label="序号" min-width="60" width="80" fixed="left"></el-table-column>
+                            <el-table-column prop="peerId" label="PeerID" min-width="200" width="380" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="address" label="EVM地址" min-width="200" width="380" show-overflow-tooltip></el-table-column>
+                            <el-table-column prop="wins" label="获胜次数" min-width="80" width="100">
+                                <template #header>
+                                    <div>
+                                        获胜次数
+                                        <el-tag v-if="totalWins > 0" size="small" type="success" style="margin-left: 5px;">总计: {{ totalWins }}</el-tag>
+                                    </div>
+                                </template>
+                            </el-table-column>
+                            <el-table-column 
+                                prop="winsChange" 
+                                :label="compareTimeLabel"
+                                min-width="120"
+                                width="180"
+                                v-if="showComparison">
+                                <template #default="scope">
+                                    <el-tag :type="scope.row.winsChange > 0 ? 'success' : 'info'" v-if="scope.row.winsChange !== undefined">
+                                        {{ scope.row.winsChange > 0 ? '+' + scope.row.winsChange : scope.row.winsChange }}
+                                    </el-tag>
+                                </template>
+                            </el-table-column>
+                        </el-table>
+                    </div>
+                </el-card>
+            </el-main>
+        </el-container>
+    </div>
+
+    <script>
+        const contractABI = {"abi":[{"type":"function","name":"getEoa","inputs":[{"name":"peerIds","type":"string[]","internalType":"string[]"}],"outputs":[{"name":"","type":"address[]","internalType":"address[]"}],"stateMutability":"view"},{"type":"function","name":"getTotalWins","inputs":[{"name":"peerId","type":"string","internalType":"string"}],"outputs":[{"name":"","type":"uint256","internalType":"uint256"}],"stateMutability":"view"}]};
+        const contractAddress = "0x2fC68a233EF9E9509f034DD551FF90A79a0B8F82";
+        const rpcUrl = "https://gensyn-testnet.g.alchemy.com/public";
+
+        const { createApp, ref } = Vue;
+        const { ElMessage, ElMessageBox } = ElementPlus;
+
+        const app = createApp({
+            setup() {
+                const inputPeerIds = ref('');
+                const peerList = ref([]);
+                const querying = ref(false);
+                const lastQueryTime = ref('');
+                const compareTimeLabel = ref('对比变化');
+                const showComparison = ref(false);
+                const totalWins = ref(0); // 添加总获胜次数统计
+                const provider = new ethers.JsonRpcProvider(rpcUrl);
+                const contract = new ethers.Contract(contractAddress, contractABI.abi, provider);
+
+                // 格式化时间
+                const formatTime = (date) => {
+                    return `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
+                };
+
+                // 计算时间间隔
+                const calculateTimeInterval = (currentTime, lastTime) => {
+                    const current = new Date(currentTime);
+                    const last = new Date(lastTime);
+                    const diffMinutes = (current - last) / (1000 * 60);
+                    return Math.round(diffMinutes * 10) / 10; // 保留一位小数
+                };
+
+                // 计算总获胜次数
+                const calculateTotalWins = () => {
+                    let total = 0;
+                    peerList.value.forEach(item => {
+                        if (item.wins && item.wins !== '查询失败') {
+                            total += parseInt(item.wins);
+                        }
+                    });
+                    totalWins.value = total;
+                };
+
+                // 从本地存储加载数据
+                const loadFromStorage = () => {
+                    const stored = localStorage.getItem('peerIds');
+                    const storedTime = localStorage.getItem('lastQueryTime');
+                    if (stored && storedTime) {
+                        peerList.value = JSON.parse(stored);
+                        lastQueryTime.value = storedTime;
+                        showComparison.value = true;
+                        calculateTotalWins(); // 加载数据后计算总获胜次数
+                    }
+                };
+
+                // 导入PeerID
+                const importPeerIds = () => {
+                    if (!inputPeerIds.value.trim()) {
+                        ElMessage.warning('请输入PeerID');
+                        return;
+                    }
+
+                    const newPeerIds = inputPeerIds.value.trim().split('\n')
+                        .map(id => id.trim())
+                        .filter(id => id);
+
+                    // 去重
+                    const existingIds = new Set(peerList.value.map(item => item.peerId));
+                    const uniqueNewIds = newPeerIds.filter(id => !existingIds.has(id));
+
+                    peerList.value = [
+                        ...peerList.value,
+                        ...uniqueNewIds.map(id => ({ peerId: id, address: '', wins: '' }))
+                    ];
+
+                    localStorage.setItem('peerIds', JSON.stringify(peerList.value));
+                    inputPeerIds.value = '';
+                    ElMessage.success('导入成功');
+                };
+
+                // 清空数据
+                const clearData = () => {
+                    ElMessageBox.confirm('确定要清空所有数据吗？', '提示', {
+                        confirmButtonText: '确定',
+                        cancelButtonText: '取消',
+                        type: 'warning'
+                    }).then(() => {
+                        localStorage.removeItem('peerIds');
+                        localStorage.removeItem('lastQueryTime');
+                        peerList.value = [];
+                        lastQueryTime.value = '';
+                        showComparison.value = false;
+                        compareTimeLabel.value = '对比变化';
+                        ElMessage.success('数据已清空');
+                    }).catch(() => {});
+                };
+
+                // 延时函数
+                const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+                // 将数组分割成小批次
+                const chunks = (arr, size) => {
+                    const result = [];
+                    for (let i = 0; i < arr.length; i += size) {
+                        result.push(arr.slice(i, i + size));
+                    }
+                    return result;
+                };
+
+                // 带重试的合约调用
+                const retryContractCall = async (fn, args, retryCount = 10, delay = 3000) => {
+                    let lastError;
+                    for (let i = 0; i < retryCount; i++) {
+                        try {
+                            return await fn(...args);
+                        } catch (error) {
+                            lastError = error;
+                            if (i < retryCount - 1) {
+                                await sleep(delay);
+                                continue;
+                            }
+                            throw error;
+                        }
+                    }
+                };
+
+                // 并发查询，带并发数限制
+                const concurrentQuery = async (items, queryFn, concurrency = 5) => {
+                    const results = [];
+                    const batches = chunks(items, concurrency);
+                    
+                    for (const batch of batches) {
+                        const batchPromises = batch.map(item => 
+                            queryFn(item).catch(error => {
+                                console.error('查询失败:', error);
+                                return '查询失败';
+                            })
+                        );
+                        const batchResults = await Promise.all(batchPromises);
+                        results.push(...batchResults);
+                    }
+                    
+                    return results;
+                };
+
+                // 查询数据
+                const queryData = async () => {
+                    if (peerList.value.length === 0) {
+                        ElMessage.warning('没有要查询的PeerID');
+                        return;
+                    }
+
+                    // 保存旧数据用于对比
+                    const oldData = peerList.value.reduce((acc, item) => {
+                        if (item.wins && item.wins !== '查询失败') {
+                            acc[item.peerId] = parseInt(item.wins);
+                        }
+                        return acc;
+                    }, {});
+                    const oldTime = lastQueryTime.value;
+
+                    querying.value = true;
+                    try {
+                        // 并发查询所有地址
+                        const allPeerIds = peerList.value.map(item => item.peerId);
+                        const batchSize = 40; // 每批40个
+                        const batches = chunks(allPeerIds, batchSize);
+                        
+                        const allAddresses = [];
+                        for (const batch of batches) {
+                            try {
+                                const addresses = await retryContractCall(
+                                    contract.getEoa.bind(contract), 
+                                    [batch]
+                                );
+                                allAddresses.push(...addresses);
+                            } catch (error) {
+                                console.error('批量查询地址失败:', error);
+                                allAddresses.push(...Array(batch.length).fill('查询失败'));
+                            }
+                        }
+
+                        // 更新地址
+                        peerList.value = peerList.value.map((item, index) => ({
+                            ...item,
+                            address: allAddresses[index]
+                        }));
+
+                        // 并发查询获胜次数
+                        const validPeers = peerList.value.filter(item => item.address !== '查询失败');
+                        const winsResults = await concurrentQuery(
+                            validPeers,
+                            async (peer) => {
+                                try {
+                                    const wins = await retryContractCall(
+                                        contract.getTotalWins.bind(contract),
+                                        [peer.peerId],
+                                        5,  // 减少重试次数
+                                        2000 // 减少重试间隔
+                                    );
+                                    return wins.toString();
+                                } catch (error) {
+                                    console.error(`查询获胜次数失败 (${peer.peerId}):`, error);
+                                    return '查询失败';
+                                }
+                            },
+                            30 // 同时查询30个
+                        );
+
+                        // 更新获胜次数
+                        let winsIndex = 0;
+                        peerList.value = peerList.value.map(item => {
+                            const newWins = item.address === '查询失败' ? '查询失败' : winsResults[winsIndex++];
+                            const oldWins = oldData[item.peerId];
+                            const winsChange = (newWins !== '查询失败' && oldWins !== undefined) 
+                                ? parseInt(newWins) - oldWins 
+                                : undefined;
+                            
+                            return {
+                                ...item,
+                                wins: newWins,
+                                winsChange
+                            };
+                        });
+
+                        // 更新查询时间和对比标签
+                        const currentTime = formatTime(new Date());
+                        if (oldTime) {
+                            const interval = calculateTimeInterval(
+                                `${new Date().getFullYear()}-${currentTime}`, 
+                                `${new Date().getFullYear()}-${oldTime}`
+                            );
+                            compareTimeLabel.value = `对比变化 (${interval}分钟)`;
+                            showComparison.value = true;
+                        }
+                        lastQueryTime.value = currentTime;
+
+                        // 计算总获胜次数
+                        calculateTotalWins();
+                        
+                        localStorage.setItem('peerIds', JSON.stringify(peerList.value));
+                        localStorage.setItem('lastQueryTime', lastQueryTime.value);
+                        ElMessage.success('查询完成');
+                    } catch (error) {
+                        console.error(error);
+                        ElMessage.error('查询出错: ' + error.toString());
+                    } finally {
+                        querying.value = false;
+                    }
+                };
+
+                // 导出数据
+                const exportData = () => {
+                    if (peerList.value.length === 0) {
+                        ElMessage.warning('没有可导出的数据');
+                        return;
+                    }
+
+                    // CSV 头部
+                    let header = '序号,PeerID,EVM地址,获胜次数';
+                    if (showComparison.value) {
+                        header += ',对比变化';
+                    }
+                    header += '\n';
+
+                    // CSV 内容
+                    const content = peerList.value
+                        .map((item, index) => {
+                            let row = `${index + 1},"${item.peerId}","${item.address}",${item.wins}`;
+                            if (showComparison.value && item.winsChange !== undefined) {
+                                row += `,${item.winsChange}`;
+                            } else if (showComparison.value) {
+                                row += ',';
+                            }
+                            return row;
+                        })
+                        .join('\n');
+
+                    const fileName = `${lastQueryTime.value}.csv`;
+
+                    const blob = new Blob(['\ufeff' + header + content], { type: 'text/csv;charset=utf-8' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = fileName;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                };
+
+                // 页面加载时从本地存储加载数据
+                loadFromStorage();
+
+                return {
+                    inputPeerIds,
+                    peerList,
+                    querying,
+                    lastQueryTime,
+                    showComparison,
+                    compareTimeLabel,
+                    totalWins, // 暴露总获胜次数
+                    importPeerIds,
+                    queryData,
+                    exportData,
+                    clearData
+                };
+            }
+        });
+
+        app.use(ElementPlus);
+        app.mount('#app');
+    </script>
+</body>
+</html>
