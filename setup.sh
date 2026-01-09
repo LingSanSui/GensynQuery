@@ -19,6 +19,16 @@ NC='\033[0m' # No Color
 # 0. 内存优化 (Swap 自动配置)
 # 针对 1GB RAM 机器防止 OOM
 # ==========================================
+
+# 辅助函数: 等待 apt 锁释放
+wait_for_apt_lock() {
+    echo "检查 apt/dpkg 锁状态..."
+    while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1 || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+        echo "等待其他 apt/dpkg 进程结束..."
+        sleep 5
+    done
+}
+
 echo -e "${YELLOW}检查内存与 Swap 配置...${NC}"
 
 # 检查是否存在 swapfile
@@ -74,6 +84,9 @@ free -h
 if [ -n "$TS_AUTH_KEY" ]; then
     echo -e "${YELLOW}检测到 TS_AUTH_KEY，准备安装并配置 Tailscale...${NC}"
     
+    # 等待 apt 锁
+    wait_for_apt_lock
+    
     # 检查并安装 Tailscale
     if ! command -v tailscale &> /dev/null; then
         echo "正在安装 Tailscale..."
@@ -105,6 +118,10 @@ fi
 # ==========================================
 if ! command -v docker &> /dev/null; then
     echo "正在安装 Docker..."
+    
+    # 等待 apt 锁
+    wait_for_apt_lock
+
     # 尝试使用官方脚本，如果失败可以考虑阿里云镜像 (针对亚洲/国内优化)
     # 但由于目标是香港/日本/新加坡，官方源通常没问题，主要是偶尔网络抖动
     for i in {1..3}; do
