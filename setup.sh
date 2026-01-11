@@ -8,6 +8,7 @@
 #
 # 环境变量:
 #   TS_AUTH_KEY: Tailscale Reusable Auth Key (可选，用于自动组网)
+#   ENABLE_SOCKS5: 设置为 "true" 可自动安装 Socks5 代理 (默认交互式询问)
 
 # 颜色定义
 GREEN='\033[0;32m'
@@ -133,6 +134,45 @@ if ! command -v docker &> /dev/null; then
     echo "Docker 安装完成"
 else
     echo "Docker 已安装"
+fi
+
+# ==========================================
+# 2.5. (可选) 安装 Socks5 代理
+# ==========================================
+# 默认直接安装，除非环境变量 ENABLE_SOCKS5=false
+INSTALL_SOCKS5=true
+
+if [ "$ENABLE_SOCKS5" == "false" ]; then
+    INSTALL_SOCKS5=false
+fi
+
+if [ "$INSTALL_SOCKS5" == "true" ]; then
+    echo -e "${YELLOW}正在安装 Socks5 代理 (gost)...${NC}"
+    
+    # 拉取镜像
+    docker pull ginuerzh/gost
+    
+    # 清理旧容器
+    docker stop socks5-proxy 2>/dev/null || true
+    docker rm socks5-proxy 2>/dev/null || true
+    
+    # 启动容器 (使用 host 网络模式以获得最佳性能和直接端口监听)
+    docker run -d --name socks5-proxy \
+        --restart always \
+        --network host \
+        --log-opt max-size=10m \
+        ginuerzh/gost \
+        -L "socks5://ygy:Xnb666888.@:9876"
+        
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Socks5 代理启动成功!${NC}"
+        echo -e "地址: ${GREEN}<本机IP>:9876${NC}"
+        echo -e "认证: ${GREEN}ygy / Xnb666888.${NC}"
+    else
+        echo -e "${RED}Socks5 代理启动失败，请检查 Docker 日志。${NC}"
+    fi
+else
+    echo "跳过 Socks5 代理安装。"
 fi
 
 # ==========================================
