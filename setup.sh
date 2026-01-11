@@ -180,18 +180,37 @@ fi
 # ==========================================
 if [ ! -f .env ]; then
     echo "创建 .env 模版..."
-    cat > .env << EOL
-STANDX_API_URL=https://api.standx.io
-STANDX_WS_URL=wss://api.standx.io/ws
-WALLET_ADDRESS=your_wallet_address
-PRIVATE_KEY=your_private_key
-EOL
-    echo -e "${YELLOW}请务必编辑 .env 文件填入私钥!${NC}"
+    cat <<EOF > .env
+# StandX Configuration
+STANDX_AUTH_URL=https://api.standx.com
+STANDX_PERPS_URL=https://perps.standx.com
+STANDX_WS_URL=wss://perps.standx.com/ws-stream/v1
+
+# Swarm Configuration
+SWARM_MANAGER_IP=http://localhost:8501
+EOF
+    echo -e "${YELLOW}.env 文件已创建!${NC}"
 fi
 
 # ==========================================
 # 5. 构建并启动 Docker 容器
 # ==========================================
+
+# 获取 Tailscale IP (用于绑定)
+TS_BIND_IP="0.0.0.0"
+if command -v tailscale &> /dev/null; then
+    TS_IP_CHECK=$(tailscale ip -4)
+    if [ -n "$TS_IP_CHECK" ]; then
+        echo -e "${GREEN}检测到 Tailscale IP: $TS_IP_CHECK${NC}"
+        echo -e "${YELLOW}为了安全，Agent 将仅绑定到 Tailscale IP (仅内网访问)。${NC}"
+        TS_BIND_IP=$TS_IP_CHECK
+    else
+        echo -e "${YELLOW}Tailscale 已安装但未获取到 IP，回退到 0.0.0.0${NC}"
+    fi
+else
+    echo -e "${YELLOW}未检测到 Tailscale，Agent 将绑定到 0.0.0.0 (公网可访问)${NC}"
+fi
+
 echo "构建 Docker 镜像..."
 # 增加 --network host 以优化构建时的网络连接
 docker build --network host -t standx-bot .
@@ -211,9 +230,10 @@ docker run -d \
   --memory="800m" \
   --memory-swap="2g" \
   -v $(pwd)/.env:/app/.env \
-  standx-bot
+  standx-bot \
+  uvicorn app.agent:app --host $TS_BIND_IP --port 8000
 
-echo -e "${GREEN}部署完成! 服务运行在 8000 端口${NC}"
+echo -e "${GREEN}部署完成! 服务运行在 $TS_BIND_IP:8000${NC}"
 
 # ==========================================
 # 6. 结果汇总
