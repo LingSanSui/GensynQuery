@@ -242,6 +242,29 @@ if command -v tailscale &> /dev/null; then
     TS_IP_CHECK=$(tailscale ip -4)
     if [ -n "$TS_IP_CHECK" ]; then
         echo -e "${GREEN}检测到 Tailscale IP: $TS_IP_CHECK${NC}"
+        
+        # 尝试优雅停止旧服务
+        echo -e "${YELLOW}正在尝试通知旧服务停止运行 (POST /stop)...${NC}"
+        # 设置2秒超时，忽略输出
+        if curl -X POST "http://$TS_IP_CHECK:8000/stop" --max-time 2 >/dev/null 2>&1; then
+             echo -e "${GREEN}停止指令发送成功，等待服务清理...${NC}"
+        else
+             echo -e "${YELLOW}停止指令发送失败或超时 (可能服务未运行)，继续后续步骤...${NC}"
+        fi
+        # 等待3秒
+        sleep 3
+
+        # 安装 Tailscale 保活服务
+        echo "安装 Tailscale 保活服务..."
+        sudo cp scripts/keepalive_tailscale.sh /usr/local/bin/standx-keepalive-tailscale.sh
+        sudo chmod +x /usr/local/bin/standx-keepalive-tailscale.sh
+        sudo cp scripts/standx-tailscale-keepalive.service /etc/systemd/system/
+        
+        sudo systemctl daemon-reload
+        sudo systemctl enable standx-tailscale-keepalive.service
+        sudo systemctl start standx-tailscale-keepalive.service
+        echo -e "${GREEN}Tailscale 保活服务已启动 (standx-tailscale-keepalive)${NC}"
+
         echo -e "${YELLOW}为了安全，Agent 将仅绑定到 Tailscale IP (仅内网访问)。${NC}"
         TS_BIND_IP=$TS_IP_CHECK
     else
@@ -251,14 +274,21 @@ else
     echo -e "${YELLOW}未检测到 Tailscale，Agent 将绑定到 0.0.0.0 (公网可访问)${NC}"
 fi
 
+
+# 1. 停止并清理旧容器
+echo "停止旧容器..."
+docker stop standx-bot-container || true
+docker rm standx-bot-container || true
+
+# 2. 清理旧镜像 (只清理名为 standx-bot 的镜像，避免清理掉基础镜像)
+# 使用 2>/dev/null 忽略报错 (例如镜像不存在时)
+echo "清理旧镜像..."
+docker rmi standx-bot 2>/dev/null || true
+
 echo "构建 Docker 镜像..."
-# 增加 --network host 以优化构建时的网络连接
 docker build --network host -t standx-bot .
 
 echo "启动容器..."
-# 停止旧容器
-docker stop standx-bot-container || true
-docker rm standx-bot-container || true
 
 # 启动新容器 
 # 限制内存使用，防止彻底卡死宿主机 (预留 100M 给系统)
@@ -269,6 +299,8 @@ docker run -d \
   --network host \
   --memory="800m" \
   --memory-swap="2g" \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
   -v $(pwd)/.env:/app/.env \
   standx-bot \
   uvicorn app.agent:app --host $TS_BIND_IP --port 8000
