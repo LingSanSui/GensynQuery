@@ -290,6 +290,12 @@ docker build --network host -t standx-bot .
 
 echo "启动容器..."
 
+# 检查并创建 user_config.json 以持久化非私钥配置 (策略配置等)
+if [ ! -f user_config.json ]; then
+    echo "{}" > user_config.json
+    chmod 666 user_config.json
+fi
+
 # 启动新容器 
 # 限制内存使用，防止彻底卡死宿主机 (预留 100M 给系统)
 # 对于 1GB 机器，限制容器使用 800M
@@ -302,6 +308,7 @@ docker run -d \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
   -v $(pwd)/.env:/app/.env \
+  -v $(pwd)/user_config.json:/app/user_config.json \
   standx-bot \
   uvicorn app.agent:app --host $TS_BIND_IP --port 8000
 
